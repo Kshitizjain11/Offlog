@@ -225,6 +225,7 @@ export default function TeamDetail() {
 
   const fetchTeam = async () => {
     try {
+      // Fire team fetch first to get userRole, then fire the rest in parallel
       const res = await teamService.getById(teamId);
       const d = res.data?.data ?? res.data;
       setTeam(d.team);
@@ -237,25 +238,18 @@ export default function TeamDetail() {
         allowJoinRequests: d.team.allowJoinRequests
       });
 
-      // Fetch projects & tasks for team
-      try {
-        const projRes = await taskService.getProjects(teamId);
-        setTeamProjects(projRes.data?.data ?? projRes.data ?? []);
-      } catch { /* ignore */ }
+      // Run all remaining fetches in parallel
+      const isLeaderOrMentor = ['TEAM_LEADER', 'MENTOR'].includes(d.userRole);
+      const [projRes, actRes, reqRes] = await Promise.all([
+        taskService.getProjects(teamId).catch(() => null),
+        teamService.getActivities(teamId).catch(() => null),
+        isLeaderOrMentor ? teamService.getJoinRequests(teamId).catch(() => null) : Promise.resolve(null),
+      ]);
 
-      // Fetch real activities for this team
-      try {
-        const actRes = await teamService.getActivities(teamId);
-        setTeamActivities(actRes.data?.data ?? actRes.data ?? []);
-      } catch { /* ignore */ }
+      if (projRes) setTeamProjects(projRes.data?.data ?? projRes.data ?? []);
+      if (actRes) setTeamActivities(actRes.data?.data ?? actRes.data ?? []);
+      if (reqRes) setJoinRequests(reqRes.data?.data ?? reqRes.data ?? []);
 
-      // If leader or mentor, fetch join requests count
-      if (['TEAM_LEADER', 'MENTOR'].includes(d.userRole)) {
-        try {
-          const reqRes = await teamService.getJoinRequests(teamId);
-          setJoinRequests(reqRes.data?.data ?? reqRes.data ?? []);
-        } catch { /* ignore silently */ }
-      }
     } catch {
       navigate('/teams');
     } finally {
