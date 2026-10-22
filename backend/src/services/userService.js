@@ -26,45 +26,45 @@ export const updateUserProfile = async (userId, updateData) => {
 };
 
 export const getUserDashboard = async (userId) => {
-  const user = await User.findById(userId).select('-password');
+  // Run all queries in parallel instead of sequentially
+  const [user, memberships, pendingRequests, notifications, unreadCount] = await Promise.all([
+    User.findById(userId).select('-password'),
 
-  // Get teams with populated members & user details
-  const memberships = await TeamMember.find({ user: userId })
-    .populate({
-      path: 'team',
-      populate: [
-        { path: 'createdBy', select: 'name email avatar' },
-        { path: 'members', populate: { path: 'user', select: 'name email avatar' } }
-      ]
-    })
-    .sort({ joinedAt: -1 });
+    // Lightweight populate — only name/avatar for members, no deep nesting
+    TeamMember.find({ user: userId })
+      .populate({
+        path: 'team',
+        populate: [
+          { path: 'createdBy', select: 'name email avatar' },
+          { path: 'members', select: 'name email avatar' }
+        ]
+      })
+      .sort({ joinedAt: -1 }),
 
-  // Get pending join requests sent by user
-  const pendingRequests = await JoinRequest.find({ user: userId, status: 'PENDING' })
-    .populate('team', 'name description logo joinCode')
-    .sort({ createdAt: -1 });
+    JoinRequest.find({ user: userId, status: 'PENDING' })
+      .populate('team', 'name description logo joinCode')
+      .sort({ createdAt: -1 }),
 
-  // Get incoming join requests for teams where user is TEAM_LEADER or MENTOR
+    Notification.find({ user: userId })
+      .populate('relatedTeam', 'name')
+      .populate('relatedUser', 'name avatar')
+      .sort({ createdAt: -1 })
+      .limit(15),
+
+    Notification.countDocuments({ user: userId, read: false }),
+  ]);
+
+  // Incoming requests need memberships first — run after
   const leaderOrMentorTeamIds = memberships
     .filter(m => ['TEAM_LEADER', 'MENTOR'].includes(m.role) && m.team)
     .map(m => m.team._id);
 
-  const incomingRequests = await JoinRequest.find({
-    team: { $in: leaderOrMentorTeamIds },
-    status: 'PENDING'
-  })
-    .populate('team', 'name logo')
-    .populate('user', 'name email avatar')
-    .sort({ createdAt: -1 });
-
-  // Get recent notifications for activity feed
-  const notifications = await Notification.find({ user: userId })
-    .populate('relatedTeam', 'name')
-    .populate('relatedUser', 'name avatar')
-    .sort({ createdAt: -1 })
-    .limit(15);
-
-  const unreadCount = await Notification.countDocuments({ user: userId, read: false });
+  const incomingRequests = leaderOrMentorTeamIds.length > 0
+    ? await JoinRequest.find({ team: { $in: leaderOrMentorTeamIds }, status: 'PENDING' })
+        .populate('team', 'name logo')
+        .populate('user', 'name email avatar')
+        .sort({ createdAt: -1 })
+    : [];
 
   return {
     user,
